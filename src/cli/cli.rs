@@ -1,13 +1,32 @@
+use anyhow::anyhow;
 use clap::{Parser, Subcommand};
-use justrun::{ipc::*, paths::RESULT_BASE};
+use justrun::{
+    ipc::*,
+    paths::{CONFIG, DEFAULT_CONFIG, RESULT_BASE},
+};
 use log::error;
+use yaml_rust2 as yaml;
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, PartialEq)]
 enum Command {
-    Start,
-    Stop,
-    Restart,
-    Status,
+    Start {
+        #[arg(short, long)]
+        name: String,
+    },
+    Stop {
+        #[arg(short, long)]
+        name: String,
+    },
+    Restart {
+        #[arg(short, long)]
+        name: String,
+    },
+    Status {
+        #[arg(short, long)]
+        name: String,
+    },
+    Reg,
+    Unreg,
 }
 
 #[derive(Parser, Debug)]
@@ -16,13 +35,64 @@ enum Command {
 struct Cli {
     #[command(subcommand)]
     command: Command,
-
-    #[arg(short, long, help = "Name of the service")]
-    name: String,
 }
 
 fn main() {
     let args = Cli::parse();
+
+    if args.command == Command::Reg || args.command == Command::Unreg {
+        if !std::path::Path::new(CONFIG).exists() {
+            println!("Config file not found, creating default config...");
+            let default_config = DEFAULT_CONFIG;
+            let config_parent = std::path::Path::new(CONFIG).parent().unwrap();
+            std::fs::create_dir_all(config_parent)
+                .map_err(|e| anyhow!("Failed to create directory: {}", e))
+                .unwrap();
+            std::fs::write(CONFIG, default_config)
+                .map_err(|e| anyhow!("Failed to create config file: {}", e))
+                .unwrap();
+        }
+
+        let config_str = std::fs::read_to_string(CONFIG)
+            .map_err(|e| anyhow!("Failed to read config file: {}", e))
+            .unwrap();
+        let mut config = yaml::YamlLoader::load_from_str(&config_str)
+            .map_err(|e| anyhow!("Failed to parse config file: {}", e))
+            .unwrap()[0]
+            .clone();
+
+        let current_dir = std::env::current_dir()
+            .map_err(|e| anyhow!("Failed to get current directory: {}", e))
+            .unwrap();
+        let current_dir = current_dir
+            .into_os_string()
+            .into_string()
+            .map_err(|err| anyhow!("Failed to convert path to string: {:?}", err))
+            .unwrap();
+        let mut services = config["services"].as_vec().unwrap().clone();
+        if args.command == Command::Reg {
+            services.push(yaml::Yaml::String(current_dir));
+        } else if args.command == Command::Unreg {
+            services.retain(|s| {
+                if let Some(path) = s.as_str() {
+                    path != current_dir
+                } else {
+                    true
+                }
+            });
+        }
+        config["services"] = yaml::Yaml::Array(services);
+
+        let mut config_out_str = String::new();
+        let mut emitter = yaml::YamlEmitter::new(&mut config_out_str);
+        emitter
+            .dump(&config)
+            .map_err(|e| anyhow!("Failed to dump config: {}", e))
+            .unwrap();
+        std::fs::write(CONFIG, config_out_str)
+            .map_err(|e| anyhow!("Failed to write config file: {}", e))
+            .unwrap();
+    }
 
     let mut transmitter = Transmitter::new().unwrap_or_else(|err| {
         error!("Failed to create Transmitter: {}", err);
@@ -35,10 +105,14 @@ fn main() {
         .as_secs();
 
     let command = match args.command {
-        Command::Start => format!("{} start {}", ts, args.name),
-        Command::Stop => format!("{} stop {}", ts, args.name),
-        Command::Restart => format!("{} restart {}", ts, args.name),
-        Command::Status => format!("{} status {}", ts, args.name),
+        Command::Start { name } => format!("{} start {}", ts, name),
+        Command::Stop { name } => format!("{} stop {}", ts, name),
+        Command::Restart { name } => format!("{} restart {}", ts, name),
+        Command::Status { name } => format!("{} status {}", ts, name),
+        _ => {
+            error!("Unsupported command to send: {:?}", args.command);
+            std::process::exit(1);
+        }
     };
 
     transmitter.send(command.as_str()).unwrap_or_else(|err| {

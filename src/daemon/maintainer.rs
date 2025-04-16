@@ -1,6 +1,6 @@
 use crate::service::Service;
 use anyhow::{anyhow, Result};
-use justrun::paths::CONFIG;
+use justrun::paths::{CONFIG, DEFAULT_CONFIG};
 use log::warn;
 use yaml_rust2 as yaml;
 
@@ -23,7 +23,7 @@ impl Maintainer {
                 "Config file does not exist, creating default config at {}",
                 CONFIG
             );
-            let default_config = include_bytes!("../../default_config.yaml");
+            let default_config = DEFAULT_CONFIG;
             let config_parent = std::path::Path::new(CONFIG).parent().unwrap();
             std::fs::create_dir_all(config_parent)
                 .map_err(|e| anyhow!("Failed to create directory: {}", e))?;
