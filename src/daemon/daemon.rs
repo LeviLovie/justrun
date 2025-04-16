@@ -3,7 +3,7 @@ pub mod cleanup;
 mod maintainer;
 pub mod service;
 
-use justrun::ipc;
+use justrun::{ipc, paths::RESULT_BASE};
 use log::{error, info};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
@@ -57,44 +57,59 @@ fn main() {
                 result = listener.accept() => {
                     match result {
                         Ok(data) => {
-                            println!("Received: {}", data);
                             let parts = data.split_whitespace().collect::<Vec<_>>();
-                            if parts.len() < 2 {
+                            if parts.len() < 3 {
                                 error!("Invalid command: {}", data);
                                 continue;
                             }
+                            let timestamp = parts[0];
+                            let action = parts[1];
+                            let arg = parts[2];
                             let mut maintainer = maintainer.lock().unwrap();
-                            let arg = parts[1];
-                            match parts[0] {
+                            let output = match action {
                                 "start" => {
-                                    match maintainer.start(arg) {
-                                        Ok(_) => info!("Started service: {}", arg),
-                                        Err(err) => error!("Failed to start service: {}", err),
-                                    }
+                                    maintainer.start(arg).unwrap_or_else(|err| {
+                                        error!("Failed to start service: {}", err);
+                                        format!("Failed to start service: {}", err)
+                                    })
                                 }
                                 "stop" => {
-                                    match maintainer.stop(arg) {
-                                        Ok(_) => info!("Stopped service: {}", arg),
-                                        Err(err) => error!("Failed to stop service: {}", err),
-                                    }
+                                    maintainer.stop(arg).unwrap_or_else(|err| {
+                                        error!("Failed to stop service: {}", err);
+                                        format!("Failed to stop service: {}", err)
+                                    })
                                 }
                                 "restart" => {
-                                    match maintainer.restart(arg) {
-                                        Ok(_) => info!("Restarted service: {}", arg),
-                                        Err(err) => error!("Failed to restart service: {}", err),
-                                    }
+                                    maintainer.restart(arg).unwrap_or_else(|err| {
+                                        error!("Failed to restart service: {}", err);
+                                        format!("Failed to restart service: {}", err)
+                                    })
                                 }
                                 "status" => {
                                     maintainer.status(arg).unwrap_or_else(|err| {
                                         error!("Failed to get status: {}", err);
-                                    });
+                                        format!("Failed to get status: {}", err)
+                                    })
                                 }
                                 _ => {
                                     error!("Unknown command: {}", parts[0]);
                                     continue;
                                 }
-                            }
+                            };
                             drop(maintainer);
+                            let path = std::path::Path::new(RESULT_BASE).join(timestamp);
+                            let parent = path.parent().unwrap();
+                            std::fs::create_dir_all(parent).unwrap_or_else(|err| {
+                                error!("Failed to create directory: {}", err);
+                            });
+                            if path.exists() {
+                                std::fs::remove_file(&path).unwrap_or_else(|err| {
+                                    error!("Failed to remove file: {}", err);
+                                });
+                            }
+                            std::fs::write(&path, output).unwrap_or_else(|err| {
+                                error!("Failed to write to file: {}", err);
+                            });
                         }
                         Err(err) => {
                             error!("{}", err);

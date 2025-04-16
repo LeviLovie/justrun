@@ -91,11 +91,10 @@ impl Maintainer {
         Ok(())
     }
 
-    pub fn start(&mut self, name: &str) -> Result<()> {
+    pub fn start(&mut self, name: &str) -> Result<String> {
         for service in &mut self.services {
             if service.name() == name {
-                service.start()?;
-                return Ok(());
+                return service.start();
             }
         }
         Err(anyhow!("Service not found: {}", name))
@@ -108,31 +107,28 @@ impl Maintainer {
         Ok(())
     }
 
-    pub fn stop(&mut self, name: &str) -> Result<()> {
+    pub fn stop(&mut self, name: &str) -> Result<String> {
         for service in &mut self.services {
             if service.name() == name {
-                service.stop()?;
-                return Ok(());
+                return service.stop();
             }
         }
         Err(anyhow!("Service not found: {}", name))
     }
 
-    pub fn restart(&mut self, name: &str) -> Result<()> {
+    pub fn restart(&mut self, name: &str) -> Result<String> {
         for service in &mut self.services {
             if service.name() == name {
-                service.restart()?;
-                return Ok(());
+                return service.restart();
             }
         }
         Err(anyhow!("Service not found: {}", name))
     }
 
-    pub fn status(&self, name: &str) -> Result<()> {
+    pub fn status(&self, name: &str) -> Result<String> {
         for service in &self.services {
             if service.name() == name {
-                service.status();
-                return Ok(());
+                return Ok(service.status());
             }
         }
         Err(anyhow!("Service not found: {}", name))

@@ -91,9 +91,9 @@ impl Service {
         &self.name
     }
 
-    pub fn start(&mut self) -> Result<()> {
+    pub fn start(&mut self) -> Result<String> {
         if !self.enabled || self.state == ServiceState::Running {
-            return Ok(());
+            return Ok("Already running".to_string());
         }
 
         let command = if self.as_root {
@@ -122,7 +122,7 @@ impl Service {
                     .as_secs();
                 let mut logs = self.logs.lock().unwrap();
                 logs.push((ts, format!("Failed to start process: {}", e)));
-                return Ok(());
+                return Ok(format!("Failed to start process: {}", e));
             }
         };
 
@@ -168,113 +168,135 @@ impl Service {
 
         {
             let logs = self.logs.clone();
-            let name = self.name.clone();
             let start_cmd = self.start.clone();
             let as_root = self.as_root;
             let logs = Arc::clone(&logs);
             let retries = self.retries.clone();
             let max_retries = self.max_retries;
             let dir = self.dir.clone();
-            std::thread::spawn(move || {
-                loop {
-                    match child.wait() {
-                        Ok(status) => {
-                            let ts = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs();
-                            let code = status.code().unwrap_or(-1);
-                            {
-                                let mut logs = logs.lock().unwrap();
-                                logs.push((ts, format!("Process exited with code {}", code)));
-                            }
-
-                            if status.success() {
-                                break;
-                            }
-
-                            {
-                                let mut retries = retries.lock().unwrap();
-                                *retries += 1;
-                                let mut logs = logs.lock().unwrap();
-                                logs.push((ts, format!("Restarting attempt #{}", retries)));
-                            }
-
-                            let retries = {
-                                let retries = retries.lock().unwrap();
-                                *retries
-                            };
-
-                            if retries >= max_retries {
-                                {
-                                    let ts = SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_secs();
-                                    let mut logs = logs.lock().unwrap();
-                                    logs.push((ts, "Max retries reached, stopping".to_string()));
-                                }
-                                break;
-                            }
-
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-
-                            let command = if as_root {
-                                format!("sudo {}", start_cmd)
-                            } else {
-                                start_cmd.clone()
-                            };
-                            let parts = command.split_whitespace().collect::<Vec<_>>();
-                            let program = parts[0];
-                            let args = &parts[1..];
-
-                            match Command::new(program)
-                                .args(args)
-                                .current_dir(dir.clone())
-                                .stdout(Stdio::null())
-                                .stderr(Stdio::null())
-                                .spawn()
-                            {
-                                Ok(new_child) => {
-                                    child = new_child;
-                                    {
-                                        let ts = SystemTime::now()
-                                            .duration_since(UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_secs();
-                                        let mut logs = logs.lock().unwrap();
-                                        logs.push((ts, "Restarted process".to_string()));
-                                    }
-                                    continue;
-                                }
-                                Err(e) => {
-                                    {
-                                        let ts = SystemTime::now()
-                                            .duration_since(UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_secs();
-                                        let mut logs = logs.lock().unwrap();
-                                        logs.push((ts, format!("Failed to restart: {}", e)));
-                                    }
-                                    break;
-                                }
-                            }
+            std::thread::spawn(move || loop {
+                match child.wait() {
+                    Ok(status) => {
+                        let ts = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        let code = status.code().unwrap_or(-1);
+                        {
+                            let mut logs = logs.lock().unwrap();
+                            logs.push((ts, format!("Process exited with code {}", code)));
                         }
-                        Err(e) => {
+
+                        if status.success() {
+                            break;
+                        }
+
+                        {
+                            let mut retries = retries.lock().unwrap();
+                            *retries += 1;
+                            let mut logs = logs.lock().unwrap();
+                            logs.push((ts, format!("Restarting attempt #{}", retries)));
+                        }
+
+                        let retries = {
+                            let retries = retries.lock().unwrap();
+                            *retries
+                        };
+
+                        if retries >= max_retries {
                             {
                                 let ts = SystemTime::now()
                                     .duration_since(UNIX_EPOCH)
                                     .unwrap()
                                     .as_secs();
                                 let mut logs = logs.lock().unwrap();
-                                logs.push((ts, format!("Failed to wait for child: {}", e)));
+                                logs.push((ts, "Max retries reached, stopping".to_string()));
                             }
                             break;
                         }
+
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+
+                        let command = if as_root {
+                            format!("sudo {}", start_cmd)
+                        } else {
+                            start_cmd.clone()
+                        };
+                        let parts = command.split_whitespace().collect::<Vec<_>>();
+                        let program = parts[0];
+                        let args = &parts[1..];
+
+                        let child = Command::new(program)
+                            .args(args)
+                            .current_dir(dir.clone())
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .spawn();
+                        let mut child = match child {
+                            Ok(new_child) => {
+                                let ts = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs();
+                                let mut logs = logs.lock().unwrap();
+                                logs.push((ts, "Restarted process".to_string()));
+                                new_child
+                            }
+                            Err(e) => {
+                                {
+                                    let ts = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_secs();
+                                    let mut logs = logs.lock().unwrap();
+                                    logs.push((ts, format!("Failed to restart: {}", e)));
+                                }
+                                break;
+                            }
+                        };
+
+                        if let Some(stdout) = child.stdout.take() {
+                            let logs = Arc::clone(&logs);
+                            std::thread::spawn(move || {
+                                let reader = std::io::BufReader::new(stdout);
+                                for line in std::io::BufRead::lines(reader).flatten() {
+                                    let ts = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_secs();
+                                    let mut logs = logs.lock().unwrap();
+                                    logs.push((ts, format!("stdout: {}", line)));
+                                }
+                            });
+                        }
+
+                        if let Some(stderr) = child.stderr.take() {
+                            let logs = Arc::clone(&logs);
+                            std::thread::spawn(move || {
+                                let reader = std::io::BufReader::new(stderr);
+                                for line in std::io::BufRead::lines(reader).flatten() {
+                                    let ts = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_secs();
+                                    let mut logs = logs.lock().unwrap();
+                                    logs.push((ts, format!("stderr: {}", line)));
+                                }
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        {
+                            let ts = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs();
+                            let mut logs = logs.lock().unwrap();
+                            logs.push((ts, format!("Failed to wait for child: {}", e)));
+                        }
+                        break;
                     }
                 }
-
-                info!("Monitor thread for service '{}' exiting", name);
             });
         }
 
@@ -288,12 +310,12 @@ impl Service {
         }
         info!("Started service: {}", self.name);
 
-        Ok(())
+        Ok("Started successfully".to_string())
     }
 
-    pub fn stop(&mut self) -> Result<()> {
+    pub fn stop(&mut self) -> Result<String> {
         if !self.enabled || self.state == ServiceState::Stopped {
-            return Ok(());
+            return Ok("Already stopped".to_string());
         }
 
         if let Some(pid) = self.pid {
@@ -331,39 +353,58 @@ impl Service {
         self.state = ServiceState::Stopped;
         self.pid = None;
         info!("Stopped service: {}", self.name);
-        Ok(())
+
+        Ok("Stopped successfully".to_string())
     }
 
-    pub fn restart(&mut self) -> Result<()> {
-        self.stop()?;
-        self.start()
-    }
-
-    pub fn status(&self) {
-        print!("Service: {}", self.name);
-        if self.enabled {
-            print!(" (enabled)");
-        } else {
-            print!(" (disabled)");
+    pub fn restart(&mut self) -> Result<String> {
+        let mut result = String::new();
+        match self.stop() {
+            Ok(_) => {
+                result.push_str("Stopped successfully. ");
+            }
+            Err(e) => {
+                return Err(anyhow!("Failed to stop: {}", e));
+            }
         }
-        print!(" ({})", self.state);
+        match self.start() {
+            Ok(_) => {
+                result.push_str("Started successfully.");
+            }
+            Err(e) => {
+                return Err(anyhow!("Failed to start: {}", e));
+            }
+        }
+
+        Ok(result)
+    }
+
+    pub fn status(&self) -> String {
+        let mut result = String::new();
+        result += &format!("Service: {}", self.name);
+        if self.enabled {
+            result += " (enabled)";
+        } else {
+            result += " (disabled)";
+        }
+        result += &format!(" ({})", self.state);
         if self.as_root {
-            print!(" (AS ROOT)");
+            result += " (AS ROOT)";
         }
         if let Some(pid) = self.pid {
-            print!(" (PID: {})", pid);
+            result += &format!(" (PID: {})", pid);
         }
-        println!();
-        println!("{} at {}", self.state, self.path);
-        println!();
+        result += "\n";
+        result += &format!("{} at {}", self.state, self.path);
+        result += "\n\n";
         for (log_time, log) in self.logs.lock().unwrap().iter() {
-            let time = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(*log_time);
-            let time_str = time
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                .to_string();
-            println!("[{}] {}", time_str, log);
+            let epoch = *log_time as i64;
+            let naive = chrono::DateTime::from_timestamp(epoch, 0).expect("Failed to convert");
+            let datetime = naive.with_timezone(&chrono::Local);
+            result += &format!("[{}] {}", datetime.format("%a %b %e %T %Y"), log);
+            result += "\n";
         }
+
+        result
     }
 }

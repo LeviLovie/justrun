@@ -1,0 +1,5 @@
+start: 'sh ./start.sh'
+name: "example"
+---
+start: 'sh ./fail.sh'
+name: "fail"
