@@ -58,7 +58,7 @@ impl Maintainer {
             let configs = yaml::YamlLoader::load_from_str(&config_str)
                 .map_err(|e| anyhow!("Failed to parse service config file: {}", e))?;
             for (i, config) in configs.iter().enumerate() {
-                match Service::new(config.clone(), path.clone(), i) {
+                match Service::new(config.clone(), path.clone()) {
                     Ok(service) => {
                         services.push(service);
                     }
@@ -83,14 +83,39 @@ impl Maintainer {
         Ok(())
     }
 
-    pub fn log(&self, name: &str) -> Result<()> {
-        for service in &self.services {
+    pub fn update(&mut self) {
+        for service in &mut self.services {
+            service.update();
+        }
+    }
+
+    pub fn start(&mut self, name: &str) -> Result<()> {
+        for service in &mut self.services {
             if service.name() == name {
-                service.log();
+                service.start()?;
                 return Ok(());
             }
         }
+        Err(anyhow!("Service not found: {}", name))
+    }
 
+    pub fn stop(&mut self, name: &str) -> Result<()> {
+        for service in &mut self.services {
+            if service.name() == name {
+                service.stop()?;
+                return Ok(());
+            }
+        }
+        Err(anyhow!("Service not found: {}", name))
+    }
+
+    pub fn status(&self, name: &str) -> Result<()> {
+        for service in &self.services {
+            if service.name() == name {
+                service.status();
+                return Ok(());
+            }
+        }
         Err(anyhow!("Service not found: {}", name))
     }
 }

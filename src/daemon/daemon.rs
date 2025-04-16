@@ -39,9 +39,22 @@ fn main() {
     {
         let maintainer = maintainer.clone();
         let maintainer = maintainer.lock().unwrap();
-        maintainer.log("example").unwrap_or_else(|err| {
+        maintainer.status("example").unwrap_or_else(|err| {
             error!("{}", err);
             std::process::exit(1);
+        });
+        drop(maintainer);
+    }
+
+    {
+        let maintainer = maintainer.clone();
+        std::thread::spawn(move || {
+            loop {
+                let mut maintainer = maintainer.lock().unwrap();
+                maintainer.update();
+                drop(maintainer);
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
         });
     }
 
@@ -59,30 +72,62 @@ fn main() {
                     std::process::exit(1);
                 });
 
+        let maintainer = maintainer.clone();
         loop {
             tokio::select! {
-                    result = listener.accept() => {
-                        match result {
-                            Ok(data) => {
-                                println!("Received: {}", data);
+                result = listener.accept() => {
+                    match result {
+                        Ok(data) => {
+                            println!("Received: {}", data);
+                            let parts = data.split_whitespace().collect::<Vec<_>>();
+                            if parts.len() < 2 {
+                                error!("Invalid command: {}", data);
+                                continue;
                             }
-                            Err(err) => {
-                                error!("{}", err);
-                                std::process::exit(1);
+                            let mut maintainer = maintainer.lock().unwrap();
+                            let arg = parts[1];
+                            match parts[0] {
+                                "start" => {
+                                    match maintainer.start(arg) {
+                                        Ok(_) => info!("Started service: {}", arg),
+                                        Err(err) => error!("Failed to start service: {}", err),
+                                    }
+                                }
+                                "stop" => {
+                                    match maintainer.stop(arg) {
+                                        Ok(_) => info!("Stopped service: {}", arg),
+                                        Err(err) => error!("Failed to stop service: {}", err),
+                                    }
+                                }
+                                "status" => {
+                                    maintainer.status(arg).unwrap_or_else(|err| {
+                                        error!("Failed to get status: {}", err);
+                                    });
+                                }
+                                _ => {
+                                    error!("Unknown command: {}", parts[0]);
+                                    continue;
+                                }
                             }
+                            drop(maintainer);
+                        }
+                        Err(err) => {
+                            error!("{}", err);
+                            std::process::exit(1);
                         }
                     }
-                    _ = tokio::signal::ctrl_c() => {
-                        info!("Received Ctrl+C, shutting down...");
-                        let _ = cleanup::cleanup();
-                        break;
-                    }
-                     _ = sigterm_stream.recv() => {
-                        info!("Received SIGTERM, shutting down...");
-                        let _ = cleanup::cleanup();
-                        break;
-            }
                 }
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Received Ctrl+C, shutting down...");
+                    let _ = cleanup::cleanup();
+                    break;
+                }
+                 _ = sigterm_stream.recv() => {
+                    info!("Received SIGTERM, shutting down...");
+                    let _ = cleanup::cleanup();
+                    break;
+                }
+            }
         }
     });
 }
