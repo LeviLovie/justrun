@@ -1,0 +1,20 @@
+[package]
+name = "justrun"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "justrun"
+path = "src/cli/cli.rs"
+
+[[bin]]
+name = "justrund"
+path = "src/daemon/daemon.rs"
+
+[dependencies]
+anyhow = "1.0.98"
+env_logger = "0.11.8"
+log = "0.4.27"
+serde_yaml = "0.9.34"
+tokio = { version = "1.44.2", features = ["net", "io-util", "rt", "rt-multi-thread", "macros", "signal"] }
+yaml-rust2 = "0.10.1"
