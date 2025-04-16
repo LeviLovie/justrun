@@ -1,3 +1,6 @@
+[![Crates](https://img.shields.io/crates/v/justrun.svg)](https://crates.io/crates/justrun)
+[![License](https://img.shields.io/crates/l/justrun.svg)](https://choosealicense.com/licenses/mit/)
+
 # justrun
 Just run it! A simple scheduler system.
 
