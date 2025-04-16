@@ -1,6 +1,9 @@
 [package]
 name = "justrun"
-version = "0.1.0"
+description = "Just run it! A simple init system"
+homepage = "https://github.com/LeviLovie/justrun"
+license = "MIT"
+version = "1.0.0"
 edition = "2024"
 
 [[bin]]
