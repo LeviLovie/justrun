@@ -1,5 +1,8 @@
-start: 'sh ./start.sh'
+start: "sh ./start.sh"
 name: "example"
 ---
-start: 'sh ./fail.sh'
+start: "sh ./fail.sh"
 name: "fail"
+---
+start: 'echo "Hello, world!"'
+name: "echo"
