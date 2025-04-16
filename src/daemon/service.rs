@@ -31,8 +31,11 @@ pub struct Service {
     state: ServiceState,
     pid: Option<u32>,
     path: String,
+    dir: String,
     enabled: bool,
     name: String,
+    max_retries: u32,
+    retries: Arc<Mutex<u32>>,
     as_root: bool,
     start: String,
     stop: Option<String>,
@@ -47,6 +50,7 @@ impl Service {
             .ok_or_else(|| anyhow!("Service name is not specified in config file: {}", CONFIG))?
             .to_string();
         let as_root = config["as_root"].as_bool().unwrap_or(false);
+        let max_retries = config["max_retries"].as_i64().unwrap_or(3) as u32;
         let start = config["start"]
             .as_str()
             .ok_or_else(|| {
@@ -60,14 +64,23 @@ impl Service {
             Some(stop) => Some(stop.to_string()),
             None => None,
         };
+        let parent_path = std::path::Path::new(&path)
+            .parent()
+            .ok_or_else(|| anyhow!("Failed to get parent directory of path: {}", path))?
+            .to_str()
+            .ok_or_else(|| anyhow!("Failed to convert path to string: {}", path))?
+            .to_string();
 
         Ok(Self {
             state: ServiceState::Loaded,
             pid: None,
             path,
+            dir: parent_path,
             enabled,
             name,
             as_root,
+            retries: Arc::new(Mutex::new(0)),
+            max_retries,
             start,
             stop,
             logs: Arc::new(Mutex::new(vec![])),
@@ -93,12 +106,30 @@ impl Service {
         let program = parts[0];
         let args = &parts[1..];
 
-        let mut child = Command::new(program)
+        let mut child = match Command::new(program)
             .args(args)
+            .current_dir(&self.dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| anyhow!("Failed to spawn command: {}", e))?;
+        {
+            Ok(child) => child,
+            Err(e) => {
+                self.state = ServiceState::Failed;
+                let ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let mut logs = self.logs.lock().unwrap();
+                logs.push((ts, format!("Failed to start process: {}", e)));
+                return Ok(());
+            }
+        };
+
+        {
+            let mut retries = self.retries.lock().unwrap();
+            *retries = 0;
+        }
 
         self.pid = Some(child.id());
         self.state = ServiceState::Running;
@@ -135,36 +166,129 @@ impl Service {
             });
         }
 
+        {
+            let logs = self.logs.clone();
+            let name = self.name.clone();
+            let start_cmd = self.start.clone();
+            let as_root = self.as_root;
+            let logs = Arc::clone(&logs);
+            let retries = self.retries.clone();
+            let max_retries = self.max_retries;
+            let dir = self.dir.clone();
+            std::thread::spawn(move || {
+                loop {
+                    match child.wait() {
+                        Ok(status) => {
+                            let ts = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs();
+                            let code = status.code().unwrap_or(-1);
+                            {
+                                let mut logs = logs.lock().unwrap();
+                                logs.push((ts, format!("Process exited with code {}", code)));
+                            }
+
+                            if status.success() {
+                                break;
+                            }
+
+                            {
+                                let mut retries = retries.lock().unwrap();
+                                *retries += 1;
+                                let mut logs = logs.lock().unwrap();
+                                logs.push((ts, format!("Restarting attempt #{}", retries)));
+                            }
+
+                            let retries = {
+                                let retries = retries.lock().unwrap();
+                                *retries
+                            };
+
+                            if retries >= max_retries {
+                                {
+                                    let ts = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_secs();
+                                    let mut logs = logs.lock().unwrap();
+                                    logs.push((ts, "Max retries reached, stopping".to_string()));
+                                }
+                                break;
+                            }
+
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+
+                            let command = if as_root {
+                                format!("sudo {}", start_cmd)
+                            } else {
+                                start_cmd.clone()
+                            };
+                            let parts = command.split_whitespace().collect::<Vec<_>>();
+                            let program = parts[0];
+                            let args = &parts[1..];
+
+                            match Command::new(program)
+                                .args(args)
+                                .current_dir(dir.clone())
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .spawn()
+                            {
+                                Ok(new_child) => {
+                                    child = new_child;
+                                    {
+                                        let ts = SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_secs();
+                                        let mut logs = logs.lock().unwrap();
+                                        logs.push((ts, "Restarted process".to_string()));
+                                    }
+                                    continue;
+                                }
+                                Err(e) => {
+                                    {
+                                        let ts = SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_secs();
+                                        let mut logs = logs.lock().unwrap();
+                                        logs.push((ts, format!("Failed to restart: {}", e)));
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            {
+                                let ts = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs();
+                                let mut logs = logs.lock().unwrap();
+                                logs.push((ts, format!("Failed to wait for child: {}", e)));
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                info!("Monitor thread for service '{}' exiting", name);
+            });
+        }
+
+        {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let mut logs = self.logs.lock().unwrap();
+            logs.push((ts, "Started".to_string()));
+        }
         info!("Started service: {}", self.name);
 
         Ok(())
-    }
-
-    pub fn update(&mut self) {
-        if !self.enabled || self.state == ServiceState::Stopped {
-            return;
-        }
-
-        if let Some(pid) = self.pid {
-            match Command::new("ps").arg("-p").arg(pid.to_string()).output() {
-                Ok(output) => {
-                    if output.status.success() {
-                        self.state = ServiceState::Running;
-                    } else {
-                        self.state = ServiceState::Stopped;
-                    }
-                }
-                Err(e) => {
-                    self.state = ServiceState::Failed;
-                    let ts = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs();
-                    let mut logs = self.logs.lock().unwrap();
-                    logs.push((ts, format!("Failed to check process: {}", e)));
-                }
-            }
-        }
     }
 
     pub fn stop(&mut self) -> Result<()> {
@@ -195,10 +319,24 @@ impl Service {
                 .map_err(|e| anyhow!("Failed to send SIGTERM: {}", e))?;
         }
 
+        {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let mut logs = self.logs.lock().unwrap();
+            logs.push((ts, "Stopped".to_string()));
+        }
+
         self.state = ServiceState::Stopped;
         self.pid = None;
         info!("Stopped service: {}", self.name);
         Ok(())
+    }
+
+    pub fn restart(&mut self) -> Result<()> {
+        self.stop()?;
+        self.start()
     }
 
     pub fn status(&self) {

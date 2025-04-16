@@ -1,3 +1,5 @@
+use std::os::unix::fs::PermissionsExt;
+
 use crate::paths::SOCKET;
 use anyhow::{Result, anyhow};
 use tokio::{io::AsyncReadExt, net::UnixListener};
@@ -7,9 +9,20 @@ pub struct Listener {
 }
 
 impl Listener {
-    pub fn new() -> Result<Self> {
+    pub fn new(require_root: bool) -> Result<Self> {
+        std::fs::create_dir_all("/tmp/justrund")?;
+        if !require_root {
+            std::fs::set_permissions("/tmp/justrund", std::fs::Permissions::from_mode(0o755))?;
+        }
+
         let listener =
             UnixListener::bind(SOCKET).map_err(|e| anyhow!("Failed to bind to socket: {}", e))?;
+
+        if !require_root {
+            std::fs::set_permissions(SOCKET, std::fs::Permissions::from_mode(0o666))
+                .map_err(|e| anyhow!("Failed to set permissions on socket: {}", e))?;
+        }
+
         Ok(Listener { listener })
     }
 

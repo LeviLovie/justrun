@@ -36,30 +36,9 @@ fn main() {
         Arc::new(Mutex::new(maintainer))
     };
 
-    {
-        let maintainer = maintainer.clone();
-        let maintainer = maintainer.lock().unwrap();
-        maintainer.status("example").unwrap_or_else(|err| {
-            error!("{}", err);
-            std::process::exit(1);
-        });
-        drop(maintainer);
-    }
-
-    {
-        let maintainer = maintainer.clone();
-        std::thread::spawn(move || {
-            loop {
-                let mut maintainer = maintainer.lock().unwrap();
-                maintainer.update();
-                drop(maintainer);
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
-        });
-    }
-
     rt.block_on(async {
-        let listener = ipc::Listener::new().unwrap_or_else(|err| {
+        let require_root = maintainer.lock().unwrap().require_root;
+        let listener = ipc::Listener::new(require_root).unwrap_or_else(|err| {
             error!("{}", err);
             std::process::exit(1);
         });
@@ -99,6 +78,12 @@ fn main() {
                                         Err(err) => error!("Failed to stop service: {}", err),
                                     }
                                 }
+                                "restart" => {
+                                    match maintainer.restart(arg) {
+                                        Ok(_) => info!("Restarted service: {}", arg),
+                                        Err(err) => error!("Failed to restart service: {}", err),
+                                    }
+                                }
                                 "status" => {
                                     maintainer.status(arg).unwrap_or_else(|err| {
                                         error!("Failed to get status: {}", err);
@@ -119,11 +104,19 @@ fn main() {
                 }
                 _ = tokio::signal::ctrl_c() => {
                     info!("Received Ctrl+C, shutting down...");
+                    let mut maintainer = maintainer.lock().unwrap();
+                    maintainer.stop_all().unwrap_or_else(|err| {
+                        error!("Failed to stop all services: {}", err);
+                    });
                     let _ = cleanup::cleanup();
                     break;
                 }
                  _ = sigterm_stream.recv() => {
                     info!("Received SIGTERM, shutting down...");
+                    let mut maintainer = maintainer.lock().unwrap();
+                    maintainer.stop_all().unwrap_or_else(|err| {
+                        error!("Failed to stop all services: {}", err);
+                    });
                     let _ = cleanup::cleanup();
                     break;
                 }
