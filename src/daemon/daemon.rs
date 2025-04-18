@@ -91,6 +91,12 @@ fn main() {
                                         format!("Failed to get status: {}", err)
                                     })
                                 }
+                                "restartd" => {
+                                    maintainer.reload().unwrap_or_else(|err| {
+                                        error!("Failed to reload config: {}", err);
+                                        format!("Failed to reload config: {}", err)
+                                    })
+                                }
                                 _ => {
                                     error!("Unknown command: {}", parts[0]);
                                     continue;

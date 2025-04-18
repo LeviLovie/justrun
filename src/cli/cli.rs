@@ -27,6 +27,7 @@ enum Command {
     },
     Reg,
     Unreg,
+    Restartd,
 }
 
 #[derive(Parser, Debug)]
@@ -70,16 +71,22 @@ fn main() {
             .map_err(|err| anyhow!("Failed to convert path to string: {:?}", err))
             .unwrap();
         let mut services = config["services"].as_vec().unwrap().clone();
-        if args.command == Command::Reg {
-            services.push(yaml::Yaml::String(current_dir));
-        } else if args.command == Command::Unreg {
-            services.retain(|s| {
-                if let Some(path) = s.as_str() {
-                    path != current_dir
-                } else {
-                    true
-                }
-            });
+        match args.command {
+            Command::Reg => {
+                services.push(yaml::Yaml::String(current_dir));
+                println!("Registered service succesfully");
+            }
+            Command::Unreg => {
+                services.retain(|s| {
+                    if let Some(path) = s.as_str() {
+                        path != current_dir
+                    } else {
+                        true
+                    }
+                });
+                println!("Unregistered service succesfully");
+            }
+            _ => {}
         }
         config["services"] = yaml::Yaml::Array(services);
 
@@ -109,6 +116,7 @@ fn main() {
         Command::Stop { name } => format!("{} stop {}", ts, name),
         Command::Restart { name } => format!("{} restart {}", ts, name),
         Command::Status { name } => format!("{} status {}", ts, name),
+        Command::Restartd => format!("{} restartd none", ts),
         _ => {
             error!("Unsupported command to send: {:?}", args.command);
             std::process::exit(1);

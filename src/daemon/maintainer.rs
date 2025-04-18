@@ -39,6 +39,7 @@ impl Maintainer {
 
         self.require_root = config["require_root"].as_bool().unwrap_or(true);
         let services = config["services"].as_vec();
+        self.services = Vec::new();
 
         match services {
             Some(services) => {
@@ -82,6 +83,16 @@ impl Maintainer {
         }
 
         Ok(())
+    }
+
+    pub fn reload(&mut self) -> Result<String> {
+        self.stop_all()?;
+        self.load()?;
+        self.start_all()?;
+        return Ok(format!(
+            "Reloaded and started {} services",
+            self.services.len()
+        ));
     }
 
     pub fn start_all(&mut self) -> Result<()> {
