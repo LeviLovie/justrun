@@ -13,6 +13,7 @@ pub enum ServiceState {
     Loaded,
     Running,
     Stopped,
+    Finished,
     Failed,
 }
 
@@ -22,13 +23,14 @@ impl std::fmt::Display for ServiceState {
             ServiceState::Loaded => write!(f, "Loaded"),
             ServiceState::Running => write!(f, "Running"),
             ServiceState::Stopped => write!(f, "Stopped"),
+            ServiceState::Finished => write!(f, "Finished"),
             ServiceState::Failed => write!(f, "Failed"),
         }
     }
 }
 
 pub struct Service {
-    state: ServiceState,
+    state: Arc<Mutex<ServiceState>>,
     pid: Option<u32>,
     path: String,
     dir: String,
@@ -72,7 +74,7 @@ impl Service {
             .to_string();
 
         Ok(Self {
-            state: ServiceState::Loaded,
+            state: Arc::new(Mutex::new(ServiceState::Loaded)),
             pid: None,
             path,
             dir: parent_path,
@@ -92,8 +94,11 @@ impl Service {
     }
 
     pub fn start(&mut self) -> Result<String> {
-        if !self.enabled || self.state == ServiceState::Running {
-            return Ok("Already running".to_string());
+        {
+            let state = self.state.lock().unwrap().clone();
+            if !self.enabled || state == ServiceState::Running {
+                return Ok("Already running".to_string());
+            }
         }
 
         let command = if self.as_root {
@@ -115,7 +120,11 @@ impl Service {
         {
             Ok(child) => child,
             Err(e) => {
-                self.state = ServiceState::Failed;
+                let state = self.state.clone();
+                {
+                    let mut state = state.lock().unwrap();
+                    *state = ServiceState::Failed;
+                }
                 let ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
@@ -132,7 +141,11 @@ impl Service {
         }
 
         self.pid = Some(child.id());
-        self.state = ServiceState::Running;
+        let state = self.state.clone();
+        {
+            let mut state = state.lock().unwrap();
+            *state = ServiceState::Running;
+        }
 
         let logs = Arc::clone(&self.logs);
 
@@ -174,6 +187,7 @@ impl Service {
             let retries = self.retries.clone();
             let max_retries = self.max_retries;
             let dir = self.dir.clone();
+            let state = self.state.clone();
             std::thread::spawn(move || loop {
                 match child.wait() {
                     Ok(status) => {
@@ -188,6 +202,8 @@ impl Service {
                         }
 
                         if status.success() {
+                            let mut state = state.lock().unwrap();
+                            *state = ServiceState::Finished;
                             break;
                         }
 
@@ -211,6 +227,8 @@ impl Service {
                                     .as_secs();
                                 let mut logs = logs.lock().unwrap();
                                 logs.push((ts, "Max retries reached, stopping".to_string()));
+                                let mut state = state.lock().unwrap();
+                                *state = ServiceState::Failed;
                             }
                             break;
                         }
@@ -314,7 +332,8 @@ impl Service {
     }
 
     pub fn stop(&mut self) -> Result<String> {
-        if !self.enabled || self.state == ServiceState::Stopped {
+        let state = self.state.lock().unwrap().clone();
+        if !self.enabled || state == ServiceState::Stopped {
             return Ok("Already stopped".to_string());
         }
 
@@ -337,6 +356,8 @@ impl Service {
             let _ = Command::new("kill")
                 .arg("-SIGTERM")
                 .arg(pid.to_string())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .spawn()
                 .map_err(|e| anyhow!("Failed to send SIGTERM: {}", e))?;
         }
@@ -350,7 +371,10 @@ impl Service {
             logs.push((ts, "Stopped".to_string()));
         }
 
-        self.state = ServiceState::Stopped;
+        {
+            let mut state = self.state.lock().unwrap();
+            *state = ServiceState::Stopped;
+        }
         self.pid = None;
         info!("Stopped service: {}", self.name);
 
@@ -380,6 +404,7 @@ impl Service {
     }
 
     pub fn status(&self) -> String {
+        let state = self.state.lock().unwrap().clone();
         let mut result = String::new();
         result += &format!("Service: {}", self.name);
         if self.enabled {
@@ -387,7 +412,7 @@ impl Service {
         } else {
             result += " (disabled)";
         }
-        result += &format!(" ({})", self.state);
+        result += &format!(" ({})", state);
         if self.as_root {
             result += " (AS ROOT)";
         }
@@ -395,7 +420,7 @@ impl Service {
             result += &format!(" (PID: {})", pid);
         }
         result += "\n";
-        result += &format!("{} at {}", self.state, self.path);
+        result += &format!("{} at {}", state, self.path);
         result += "\n\n";
         for (log_time, log) in self.logs.lock().unwrap().iter() {
             let epoch = *log_time as i64;
