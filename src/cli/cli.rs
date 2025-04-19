@@ -28,6 +28,7 @@ enum Command {
     Reg,
     Unreg,
     Restartd,
+    Init,
 }
 
 #[derive(Parser, Debug)]
@@ -40,6 +41,19 @@ struct Cli {
 
 fn main() {
     let args = Cli::parse();
+
+    if args.command == Command::Init {
+        let default_service = include_bytes!("../../default_service.yaml");
+        let current_dit = std::env::current_dir()
+            .map_err(|e| anyhow!("Failed to get current directory: {}", e))
+            .unwrap();
+        let path = current_dit.join("justrun.yaml");
+        std::fs::write(&path, default_service)
+            .map_err(|e| anyhow!("Failed to create default service file: {}", e))
+            .unwrap();
+        println!("Default service config created at: {}", path.display());
+        println!("Register using \"sudo justrun reg\"");
+    }
 
     if args.command == Command::Reg || args.command == Command::Unreg {
         if !std::path::Path::new(CONFIG).exists() {

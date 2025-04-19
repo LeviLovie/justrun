@@ -1,0 +1,2 @@
+name: echo
+start: 'echo "Started service successfully"'
